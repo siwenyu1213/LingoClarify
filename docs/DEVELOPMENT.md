@@ -324,3 +324,15 @@ popup.js仅将共用trigger-mode控件移动到当前用途的语言行，保留
 基线104f916，按用户要求将浮层英文字标从Syne 600/11px换成本地Allura 400/24px连笔手写体，行高1.65并增加上下/左右留白，字标仍为说文 lingoclarify；中文、28px词条和14px正文保留。新增vendor/fonts/allura.ttf与allura-OFL.txt，来源/取得日期/哈希见字体README；theme.js注册LC Allura，manifest公开字体资源，不新增运行依赖或远程字体请求，版本4.6.0。
 
 北京时间2026-10-16，隔离Edge155.0.4283.45、Node24.18.1、Playwright1.62.1完成18项浮层检查与55项静态检查，git diff --check通过。CDP实际字形确认Allura-Regular自定义字体；lingoclarify实测墨迹高24px、下伸笔画9px、行高39.6px，文字框底部距header底部12px；截图目视确认g/y下伸完整。覆盖三配色×260/375/1000px、长句、正文/词条原字号、关闭按钮无重叠与定位/拖动。证据artifacts/qa/result-calligraphy/report.json、header.png、result.png及各宽度截图。全部使用合成网页/Key与本机SSE，未验证其他浏览器或特殊宿主样式。公开截图/预览和本地Description同步；重新加载扩展并刷新网页生效，仅保存本任务本地提交，原有流式修改保留。
+
+## 2026-10-25 模型列表不可用时保留已保存型号
+
+基线 `main@b80405f`。问题：设置页在厂家模型列表查询失败时把型号下拉框渲染成空选项，点击“保存设置”会直接把当前用途的 `explainModel` / `translateModel` 写成空字符串；后台随后在发请求前返回“请先选择模型并保存设置”。换 Key 时也会先清空型号，若新列表查询失败或设置页提前关闭，旧型号无法恢复。
+
+本轮修复：
+- `popup.js`：列表查询失败且当前用途仍指向已保存厂家时，下拉框继续显示并保存已保存型号；接口成功返回（含合法空列表，`modelsCheckedAt` 已更新）时以接口结果为准。换 Key 不再预先清空型号，等新列表成功返回后由既有逻辑纠正；custom 地址变更仍立即清空型号并同步内存快照。保存其它设置时不再覆盖已有型号；两个用途都无型号时在保存提示中注明。
+- `background.js`：空模型错误按用途提示「解释」或「全文翻译」标签。
+- `scripts/verify-settings-controls.mjs`：新增“列表不可用时保存”和“换 Key 后列表失败”两项回归；在未修复的 `main@b80405f` 上确认第一项以空型号失败。
+- `scripts/verify-browser.mjs`：把顶部错误颜色断言更新为当前 1.0.0 主题的 `--lc-error: #b42318`（`rgb(180, 35, 24)`）。
+
+北京时间2026-10-25，Node 24.18.0、Edge 155.0.4283.45、playwright-core 1.62.1（隔离profile、合成Key/本机SSE）下：56项静态、11项设置（含新增2项）、5项对抗配置、23项浏览器回归通过，`git diff --check`通过。`scripts/verify-custom-endpoint.mjs --node-only` 在未修改的 main 上因 VM 未加载 `AISelectionPrompts` 失败，与本修复无关，未处理。未验证真实供应商生成、原生工具栏弹出层与系统右键鼠标操作；扩展版本保持1.0.0。

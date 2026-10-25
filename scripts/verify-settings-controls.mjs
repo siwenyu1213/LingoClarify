@@ -44,8 +44,12 @@ try{
   worker=context.serviceWorkers()[0]||await context.waitForEvent('serviceworker');
   await worker.evaluate(async base=>{
     const nativeFetch=fetch;
+    globalThis.qaSettingsModelsFail=false;
     globalThis.fetch=(url,options={})=>{
-      if(String(url).endsWith('/models'))return Promise.resolve(Response.json({data:[{id:'deepseek-flash'}]}));
+      if(String(url).endsWith('/models')){
+        if(globalThis.qaSettingsModelsFail)return Promise.resolve(Response.json({error:{message:'synthetic invalid key'}},{status:401}));
+        return Promise.resolve(Response.json({data:[{id:'deepseek-flash'}]}));
+      }
       if(String(url).endsWith('/chat/completions'))return nativeFetch(base+'/chat/completions',options);
       return Promise.reject(Error('QA blocks external network'));
     };
@@ -133,6 +137,49 @@ try{
     await popup.setViewportSize({width:320,height:600});assert.equal(await popup.evaluate(()=>document.body.scrollWidth<=innerWidth),true);
     // 滚动偏移取整、控件保留小数CSS像素，边界允许不足1px的舍入差。
     for(const selector of['#explain-deepseek-thinking','#explain-thinking','#trigger-mode-trigger','#save-btn']){await popup.locator(selector).scrollIntoViewIfNeeded();const r=await popup.locator(selector).boundingBox();assert.ok(r.y>=-1&&r.y+r.height<=601,JSON.stringify({selector,r,viewport:await popup.evaluate(()=>({height:innerHeight,scrollY}))}));}
+  });
+  async function seedModels(availableModels){
+    await worker.evaluate(async availableModels=>{
+      await chrome.storage.local.clear();
+      await chrome.storage.local.set(AIConfig.migrate({apiConfigVersion:1,providerConfigVersion:1,modelCatalogVersion:1,
+        explainManufacturer:'deepseek',translateManufacturer:'deepseek',explainModel:'deepseek-flash',translateModel:'deepseek-flash',
+        modelList:['deepseek-flash'],providerConnections:{deepseek:{apiKey:'synthetic-settings-only',availableModels}}}));
+    },availableModels);
+    await popup.reload();
+    await popup.waitForFunction(()=>document.querySelector('#explain-manufacturer').options.length>0);
+  }
+  await check('模型列表不可用时仍显示并保存已选模型（回归）',async()=>{
+    await popup.setViewportSize({width:390,height:700});
+    await worker.evaluate(()=>{globalThis.qaSettingsModelsFail=true;});
+    await seedModels([]);
+    assert.equal(await popup.locator('#explain-model').inputValue(),'deepseek-flash');
+    assert.equal(await popup.locator('#translate-model').inputValue(),'deepseek-flash');
+    await popup.locator('#trigger-mode').selectOption('contextMenu');
+    await save();
+    const stored=await worker.evaluate(()=>chrome.storage.local.get(['explainModel','translateModel','triggerMode']));
+    assert.deepEqual(stored,{explainModel:'deepseek-flash',translateModel:'deepseek-flash',triggerMode:'contextMenu'});
+    await worker.evaluate(()=>{globalThis.qaSettingsModelsFail=false;});
+    return {stored,detail:await popup.locator('#translate-model-detail').innerText()};
+  });
+  await check('换 Key 后列表失败不清空型号，后续保存仍保留（回归）',async()=>{
+    await worker.evaluate(()=>{globalThis.qaSettingsModelsFail=false;});
+    await seedModels(['deepseek-flash']);
+    await popup.waitForFunction(()=>document.querySelector('#explain-model').value==='deepseek-flash');
+    await worker.evaluate(()=>{globalThis.qaSettingsModelsFail=true;});
+    await popup.locator('#rewrite-key').click();
+    await popup.locator('#api-key').fill('synthetic-settings-key-2');
+    await popup.locator('#save-key').click();
+    await popup.waitForFunction(()=>document.querySelector('#key-editor').hidden);
+    await popup.waitForFunction(()=>document.querySelector('#catalog-status').textContent.includes('无效'));
+    const afterKey=await worker.evaluate(()=>chrome.storage.local.get(['explainModel','translateModel']));
+    assert.deepEqual(afterKey,{explainModel:'deepseek-flash',translateModel:'deepseek-flash'});
+    assert.equal(await popup.locator('#explain-model').inputValue(),'deepseek-flash');
+    await popup.locator('#trigger-mode').selectOption('auto');
+    await save();
+    const afterSave=await worker.evaluate(()=>chrome.storage.local.get(['explainModel','translateModel','triggerMode']));
+    assert.deepEqual(afterSave,{explainModel:'deepseek-flash',translateModel:'deepseek-flash',triggerMode:'auto'});
+    await worker.evaluate(()=>{globalThis.qaSettingsModelsFail=false;});
+    return {afterKey,afterSave,catalog:await popup.locator('#catalog-status').innerText()};
   });
   assert.deepEqual(errors,[]);
 }finally{

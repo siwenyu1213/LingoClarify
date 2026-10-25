@@ -76,6 +76,13 @@ function renderManufacturers() {
     tab.manufacturer.value = selected;
   });
 }
+// 只在该用途仍指向已保存的厂家时沿用旧型号；未保存的厂家切换不能借用旧值。
+// 接口列表已成功返回（包括合法空列表）时以接口结果为准，不再回退旧型号。
+function persistedModel(tab) {
+  if (tab.manufacturer.value !== savedConfig[tab.kind + 'Manufacturer']) return '';
+  if (providerConnection(tab.manufacturer.value).modelsCheckedAt) return '';
+  return savedConfig[tab.key] || '';
+}
 function renderModelOptions(tab) {
   const selected = tab.select.value, provider = tab.manufacturer.value;
   const connection = providerConnection(provider);
@@ -94,12 +101,20 @@ function renderModelOptions(tab) {
   }
   if (entries.some(entry => entry.id === selected)) tab.select.value = selected;
   tab.select.disabled = !entries.length;
+  // 列表查询失败时保留已保存型号；成功返回空列表（modelsCheckedAt 已更新）则尊重接口结果。
+  const persisted = missingAddress ? '' : persistedModel(tab);
   if (!entries.length) {
-    const option = document.createElement('option'); option.value = '';
-    option.textContent = missingAddress ? '先配置自定义接口地址' : connection.apiKey ? '暂无可用模型' : '填写 API Key 后加载模型';
+    const option = document.createElement('option');
+    option.value = persisted;
+    option.textContent = persisted
+      ? (catalog.find(m => persisted === m.id || persisted === AIModelCatalog.nativeId(m))?.name || persisted)
+      : (missingAddress ? '先配置自定义接口地址' : connection.apiKey ? '暂无可用模型' : '填写 API Key 后加载模型');
     tab.select.append(option);
+    tab.select.value = persisted;
+    if (persisted && !modelList.includes(persisted)) modelList.push(persisted);
   }
-  tab.detail.textContent = !entries.length && connection.apiKey ? '模型列表由当前接口提供。' : '';
+  tab.detail.textContent = !entries.length && connection.apiKey
+    ? (persisted ? '模型列表暂不可用，已保留已保存的模型。' : '模型列表由当前接口提供。') : '';
   tab.detail.hidden = !tab.detail.textContent;
   renderThinkingControls(tab);
 }
@@ -121,7 +136,10 @@ function manufacturerSettings() {
     explainManufacturer:tabs[0].manufacturer.value, translateManufacturer:tabs[1].manufacturer.value};
 }
 function modelSettings() {
-  return {modelList:modelList.slice(), explainModel:tabs[0].select.value, translateModel:tabs[1].select.value};
+  // 空下拉框只代表列表不可用；只有活动厂家已改回原厂家时才沿用已保存型号。
+  const models = tabs.map(tab => tab.select.value || persistedModel(tab));
+  for (const model of models) if (model && !modelList.includes(model)) modelList.push(model);
+  return {modelList:modelList.slice(), explainModel:models[0], translateModel:models[1]};
 }
 function showStatus(message, type = 'success') {
   $status.textContent = message; $status.className = 'status ' + type;
@@ -131,7 +149,11 @@ function showStatus(message, type = 'success') {
 
 function renderEnabledState() { $('disabled-extension').hidden = savedConfig.enabled !== false; }
 chrome.storage.onChanged.addListener((changes,area) => {
-  if (area === 'local' && changes.enabled) {
+  if (area !== 'local') return;
+  for (const key of ['explainManufacturer','translateManufacturer','explainModel','translateModel']) {
+    if (changes[key]) savedConfig[key] = changes[key].newValue;
+  }
+  if (changes.enabled) {
     savedConfig.enabled = changes.enabled.newValue !== false;
     renderEnabledState();
   }
@@ -223,6 +245,7 @@ async function refreshProviderModels(provider = connectionProvider) {
         }
       }
       await chrome.storage.local.set(updates);
+      for (const key of ['explainModel','translateModel']) if (Object.hasOwn(updates, key)) savedConfig[key] = updates[key];
     } catch (err) {
       if (unchanged()) {
         const cached=providerConnection(provider).modelEntries.length || providerConnection(provider).availableModels.length;
@@ -314,10 +337,10 @@ $('save-key').addEventListener('click', async()=>{
     captureConnection();
     const stored=await chrome.storage.local.get(['providerConnections','explainManufacturer','translateManufacturer']);
     const connections=AIConfig.normalizeConnections(stored.providerConnections);
-    const changed=connections[provider]?.apiKey!==key;
     connections[provider]=providerConnections[provider];
+    // 换 Key 只使接口列表失效；型号属于当前厂家/地址，等新列表成功返回后再纠正。
+    // 查询失败或弹窗提前关闭时保留已保存的型号，避免下一次保存把它静默清空。
     const updates={providerConnections:connections,requiresApiSetup:false};
-    if(changed) for(const tab of tabs) if(stored[tab.kind+'Manufacturer']===provider) updates[tab.key]='';
     await chrome.storage.local.set(updates);
     savedKeys[provider]=key; editingKeys.delete(provider);
     if (connectionProvider===provider) showConnection();
@@ -351,7 +374,9 @@ $('custom-save').addEventListener('click',async()=>{
       ...(changed ? {availableModels:[],modelEntries:[],modelsCheckedAt:''} : {})};
     connections.custom=profile;
     const updates={providerConnections:connections};
-    if (changed) for (const tab of tabs) if (stored[tab.kind+'Manufacturer']==='custom') updates[tab.key]='';
+    if (changed) for (const tab of tabs) if (stored[tab.kind+'Manufacturer']==='custom') {
+      updates[tab.key]=''; savedConfig[tab.key]='';
+    }
     await chrome.storage.local.set(updates);
     providerConnections.custom={...profile,apiKey:draftProfile.apiKey};
     if (draftProfile.apiKey!==profile.apiKey) Object.assign(providerConnections.custom,{availableModels:[],modelEntries:[],modelsCheckedAt:''});
@@ -374,9 +399,11 @@ $('save-btn').addEventListener('click',async()=>{
       enabled:savedConfig.enabled!==false,usePageContext:savedConfig.usePageContext!==false,
       triggerMode:$('trigger-mode').value,requiresApiSetup:false};
     await chrome.storage.local.set(config);
+    savedConfig = {...savedConfig, ...config};
     for (const [provider,connection] of Object.entries(providerConnections)) savedKeys[provider]=connection.apiKey;
     editingKeys.clear();showConnection();
-    showStatus('设置已保存。');
+    const missing = tabs.filter(tab => !config[tab.key]).map(tab => tab.kind === 'explain' ? '解释' : '全文翻译');
+    showStatus(missing.length ? `设置已保存；请在「${missing.join('」「')}」选择模型。` : '设置已保存。');
     const providers=new Set(tabs.map(tab=>tab.manufacturer.value));
     for (const provider of providers) refreshProviderModels(provider);
   } catch(err) {showStatus('保存失败，请重试。','error');}
