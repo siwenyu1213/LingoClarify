@@ -100,7 +100,8 @@ async function isolated(fn, args = null) {
         renderer.push('## Should never appear'); renderer.cancel(); return true;
       }
       if (fn === 'instrument') {
-        globalThis.qaPlayback = { appends: [], replacements: 0, removedCharacters: 0 };
+        globalThis.qaPlayback = { appends: [], replacements: 0, removedCharacters: 0, paints: [],
+          tailReplacements: 0, tailPaints: [] };
         const append = Text.prototype.appendData;
         Text.prototype.appendData = function(text) {
           if (this.parentElement?.matches('.ds-body, .ds-reasoning-body')) {
@@ -110,9 +111,14 @@ async function isolated(fn, args = null) {
         };
         const replace = Element.prototype.replaceChildren;
         Element.prototype.replaceChildren = function(...nodes) {
+          const incoming = nodes.reduce((sum, node) => sum + (node.textContent?.length || 0), 0);
           if (this.matches('.ds-body')) {
             qaPlayback.replacements++;
             qaPlayback.removedCharacters += this.textContent.length;
+            qaPlayback.paints.push({ length: incoming, time: performance.now() });
+          } else if (this.matches('.ds-stream-tail')) {
+            qaPlayback.tailReplacements++;
+            qaPlayback.tailPaints.push({ length: incoming, time: performance.now() });
           }
           return replace.apply(this, nodes);
         };
@@ -153,14 +159,19 @@ try {
       } }
     }));
   }, base);
-  await check('Actual SSE plays raw Markdown through a stable TextNode, then formats once', async () => {
+  await check('Actual SSE renders Markdown during streaming instead of exposing raw markers', async () => {
     await sample({ chunks: [rich.slice(0, 145), rich.slice(145, 320), rich.slice(320)], delay: 400, reasoning: '思考过程 **原样保留**' });
     await select('#word', 'bank');
-    await page.waitForFunction(() => document.querySelector('.ds-body')?.textContent.includes('bank'));
+    await page.waitForFunction(() => {
+      const el = document.querySelector('.ds-body');
+      return el?.textContent.includes('银行') && el.querySelector('h1') && el.querySelector('strong');
+    });
     assert.equal(await page.locator('.ds-actions').isVisible(), false);
-    assert.equal(await body().locator('strong').count(), 0);
-    assert.equal(await body().evaluate(el => el.childNodes.length === 1 && el.firstChild.nodeType === Node.TEXT_NODE), true);
-    assert.equal(await body().evaluate(el => getComputedStyle(el).whiteSpace), 'pre-wrap');
+    assert.equal(await body().locator('h1').textContent(), '词义与语境');
+    assert.ok((await body().textContent()).includes('银行'));
+    assert.equal((await body().textContent()).includes('**'), false);
+    assert.equal((await body().textContent()).includes('# 词义'), false);
+    assert.notEqual(await body().evaluate(el => getComputedStyle(el).whiteSpace), 'pre-wrap');
     await page.screenshot({ path: resolve(output, 'streaming.png') });
     await done();
     assert.equal(requests.at(-1).model, 'qa-explain');
@@ -349,48 +360,34 @@ try {
     assert.equal(await page.evaluate(() => window.qaInjected), undefined);
     assert.ok((await body().textContent()).includes('图片描述')); assert.ok(!network.some(url => url.includes('invalid.example')));
   });
-  await check('Rapid SSE chunks append bounded text per frame and format only once before actions', async () => {
+  await check('Rapid SSE chunks repaint formatted Markdown in bounded batches', async () => {
     await sample({ chunks: Array.from({ length: 100 }, (_, i) => i === 0 ? '## 快速输出\n\n' : `片段${i} `), delay: 2 });
     await isolated('instrument');
     await select('#word', 'bank'); await done();
     const stats = await isolated('stats');
-    assert.equal(stats.replacements, 2); // 初始化一个 TextNode，最终一次 Markdown 排版。
-    assert.ok(stats.appends.length > 5);
-    assert.ok(stats.appends.every(item => item.length > 0 && item.length <= 2048));
+    assert.ok(stats.tailReplacements > 2, 'streaming should repaint the live tail before completion');
+    assert.ok(stats.tailReplacements < 400, `tail paint count stays bounded, got ${stats.tailReplacements}`);
+    assert.equal(stats.appends.filter(item => item.area.includes('ds-body')).length, 0, 'body no longer plays raw text nodes');
+    assert.equal(await body().locator('h2').textContent(), '快速输出');
     assert.ok((await body().textContent()).includes('片段99'));
-    metrics.push({ inputChunks: 100, appendCount: stats.appends.length, markdownReplacements: stats.replacements - 1 });
+    metrics.push({ inputChunks: 100, tailPaints: stats.tailReplacements, bodyReplacements: stats.replacements });
   });
-  await check('Large immediate done drains both queues without clearing/replaying visible text', async () => {
+  await check('Large immediate response keeps the complete tail and finishes both queues', async () => {
     const source = '## 大块输出\n\n' + '中文😀 smooth playback '.repeat(6000);
     const reasoning = '合成思考😀'.repeat(4000);
     await sample({ chunks: [source], delay: 1, reasoning });
     await isolated('instrument');
     await select('#word', 'bank');
     await page.waitForFunction(() => document.querySelector('.ds-body')?.textContent.length > 200);
-    assert.equal(await page.locator('.ds-actions').isVisible(), false);
-    await body().evaluate(el => { window.qaTextNode = el.firstChild; window.qaTextLength = el.textContent.length; });
-    await page.waitForTimeout(100);
-    assert.equal(await body().evaluate(el => el.firstChild === window.qaTextNode && el.textContent.length >= window.qaTextLength), true);
-    try { await done(); }
-    catch (error) {
-      const stats = await isolated('stats');
-      console.log(JSON.stringify({ appends: stats.appends.length, replacements: stats.replacements, state: await page.evaluate(() => ({
-        bodyLength: document.querySelector('.ds-body')?.textContent.length,
-        reasoningLength: document.querySelector('.ds-reasoning-body')?.textContent.length,
-        bodyClass: document.querySelector('.ds-body')?.className
-      })) }));
-      throw error;
-    }
+    await done();
     assert.equal(await page.locator('.ds-reasoning-body').textContent(), reasoning);
     assert.equal(await body().locator('h2').textContent(), '大块输出');
     assert.ok((await body().textContent()).trimEnd().endsWith('smooth playback'));
+    assert.ok((await body().textContent()).length > source.length * 0.9);
     const stats = await isolated('stats');
-    const bodyWrites = stats.appends.filter(item => item.area.includes('ds-body'));
-    assert.equal(bodyWrites.reduce((sum, item) => sum + item.length, 0), source.length);
-    assert.equal(stats.removedCharacters, source.length);
-    assert.equal(stats.replacements, 2);
-    assert.ok(stats.appends.every(item => item.length <= 2048));
-    metrics.push({ sourceCharacters: source.length, reasoningCharacters: reasoning.length, maxAppend: Math.max(...stats.appends.map(item => item.length)), bodyAppends: bodyWrites.length });
+    assert.equal(stats.appends.filter(item => item.area.includes('ds-body')).length, 0);
+    assert.ok(stats.replacements >= 2);
+    metrics.push({ sourceCharacters: source.length, reasoningCharacters: reasoning.length, markdownPaints: stats.replacements, bodyAppends: 0 });
   });
   await check('Reader scroll position survives incremental rerender and final flush', async () => {
     const initial = '## 长回答\n\n' + Array.from({ length: 35 }, (_, i) => `第${i}段说明，保留完整信息。\n\n`).join('');
@@ -439,6 +436,33 @@ try {
     assert.equal(await body().locator('a[href]').getAttribute('href'), 'https://example.com/reference');
     assert.equal(await body().locator('em').count(), 0); assert.ok((await body().textContent()).includes('*普通星号*'));
   });
+  await check('Committed blocks leave the live tail without duplicating text', async () => {
+    await sample({ chunks: ['### 第一段\n\nALPHA_MARKER 内容\n\n', '### 第二段\n\nBETA_MARKER 内容\n\n'], delay: 500 });
+    await select('#word', 'bank');
+    await page.waitForFunction(() => {
+      const stable = document.querySelector('.ds-stream-stable');
+      const tail = document.querySelector('.ds-stream-tail');
+      return stable?.textContent.includes('ALPHA_MARKER') && !tail?.textContent.includes('ALPHA_MARKER');
+    }, null, { timeout: 5000 });
+    const state = await page.evaluate(() => ({
+      stable: document.querySelector('.ds-stream-stable')?.textContent || '',
+      tail: document.querySelector('.ds-stream-tail')?.textContent || '',
+      body: document.querySelector('.ds-body')?.textContent || ''
+    }));
+    assert.equal((state.body.match(/ALPHA_MARKER/g) || []).length, 1, JSON.stringify(state));
+    await done();
+    assert.equal(((await body().textContent()).match(/BETA_MARKER/g) || []).length, 1);
+  });
+  await check('A bold run split across chunks stays formatted without literal **', async () => {
+    await sample({ chunks: ['**强调', '内容** 后续'], delay: 450 });
+    await select('#word', 'bank');
+    await page.waitForFunction(() => document.querySelector('.ds-body')?.textContent.includes('强调'));
+    assert.equal((await body().textContent()).includes('**'), false);
+    assert.equal(await body().locator('strong').textContent(), '强调');
+    await done();
+    assert.equal(await body().locator('strong').textContent(), '强调内容');
+    assert.ok((await body().textContent()).includes('后续'));
+  });
   await check('Cancelling a queued renderer prevents delayed DOM writes', async () => {
     await isolated('cancel'); await page.waitForTimeout(300); assert.equal(await body().textContent(), '');
   });
@@ -449,7 +473,7 @@ try {
     await page.waitForTimeout(850); assert.ok((await body().textContent()).includes('NEW_RESULT'));
     assert.ok(!(await body().textContent()).includes('OLD_TAIL'));
   });
-  await check('Escape also cancels playback after network done; corrected final text uses the queue', async () => {
+  await check('Escape cancels a completed large response; corrected final text replaces the old answer', async () => {
     await sample({ chunks: ['OLD_QUEUED_TAIL '.repeat(20000)], delay: 1 });
     await select('#word', 'bank');
     await page.waitForFunction(() => document.querySelector('.ds-body')?.textContent.includes('OLD_QUEUED'));

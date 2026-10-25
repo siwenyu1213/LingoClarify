@@ -148,7 +148,7 @@ try {
   const reading = '## Reading\n\n```js\n' + 'identifier'.repeat(100) + '\n```\n\n| First | Second |\n| --- | --- |\n| ' + 'wide'.repeat(80) + ' | Other |\n\n[Reference](https://example.com/docs)';
   for (const selector of ['pre', '.ds-md-table', 'a[href]']) await check(`Keyboard focus survives Markdown replacement: ${selector}`, async () => {
     await fresh({ chunks: [reading, '\n\nPhase two.', '\n\nPhase three.'], delay: 700 }); await select();
-    if (!vulnerable) await done(); // 流式阶段现在只追加 TextNode，完成后才有可聚焦 Markdown。
+    if (!vulnerable) await done(); // 流式阶段持续重排 Markdown，完成后再固定焦点。
     const target = page.locator('.ds-body ' + selector); await target.waitFor(); await target.focus();
     const focused = () => target.evaluate(el => el === document.activeElement);
     assert.equal(await focused(), true);

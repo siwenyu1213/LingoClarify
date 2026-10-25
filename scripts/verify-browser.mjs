@@ -266,7 +266,7 @@ try {
     await popup.reload();await popup.locator('#explain-manufacturer option').first().waitFor({state:'attached'});await settle();
     assert.equal(await popup.locator('#explain-model').inputValue(),'deepseek-flash');
     assert.equal(await popup.locator('#catalog-status').innerText(),'模型服务暂不可用，请稍后重试。 已保留已有列表。');
-    assert.equal(await popup.locator('#catalog-status').evaluate(el=>getComputedStyle(el).color),'rgb(185, 28, 28)');
+    assert.equal(await popup.locator('#catalog-status').evaluate(el=>getComputedStyle(el).color),'rgb(180, 35, 24)');
     await popup.locator('.container').screenshot({path:resolve(evidence,'popup-interface-error.png')});
     await worker.evaluate(()=>{globalThis.qaProviderFail='';});
     await popup.reload();await popup.locator('#explain-manufacturer option').first().waitFor({state:'attached'});await settle();
