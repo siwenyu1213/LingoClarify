@@ -36,6 +36,14 @@
   pointer-events: none;
 }
 
+/* 流式增长时让 top 平滑跟随；拖动、完成或失败时移除该类。 */
+#deepseek-explain-tooltip.ds-auto-top {
+  transition: top 120ms linear;
+}
+@media (prefers-reduced-motion: reduce) {
+  #deepseek-explain-tooltip.ds-auto-top { transition: none; }
+}
+
 /* ── 头部 ── */
 .ds-header {
   display: flex;

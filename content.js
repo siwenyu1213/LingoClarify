@@ -175,6 +175,8 @@ function positionTooltip(docCoords) {
 
 function startTooltipDrag(e) {
   if (e.button !== 0 || !e.isPrimary || e.target.closest('.ds-close')) return;
+  // 手动拖动必须即时跟手，不能沿用流式增长时的 top 过渡。
+  tooltip.classList.remove('ds-auto-top');
   const rect = tooltip.getBoundingClientRect();
   const captureTarget = e.target.closest('.ds-drag-handle') || e.currentTarget;
   tooltipDrag = { id: e.pointerId, x: e.clientX, y: e.clientY, left: rect.left, top: rect.top, moved: false, captureTarget };
@@ -242,6 +244,7 @@ function hideTooltip() {
 // ═══════════════════════════════════════════
 
 function abortStream() {
+  tooltip?.classList.remove('ds-auto-top');
   if (currentStreamPort) {
     const port = currentStreamPort;
     currentStreamPort = null;
@@ -325,6 +328,8 @@ async function triggerWithStream({ text, mode, popupTitle, snapshot }) {
   let hasContent = false;
 
   positionTooltip(coords);
+  // 流式增长时让浮层位置平滑跟随；完成后恢复正常即时定位。
+  el.classList.add('ds-auto-top');
 
   // 建立流式连接
   const port = safeConnect(`stream-${Date.now()}`);
@@ -360,6 +365,7 @@ async function triggerWithStream({ text, mode, popupTitle, snapshot }) {
         el.querySelector('.ds-actions').style.display = 'flex';
         el.querySelector('.ds-model-tag').textContent = msg.model || '';
         updateExtraActions(mode);
+        el.classList.remove('ds-auto-top');
       });
     } else if (msg.type === 'error') {
       showStreamFailure(el, msg.error);
@@ -541,6 +547,7 @@ async function handleExplainThis(e) {
   bodyEl.classList.add('ds-streaming');
   reasoningEl.style.display = 'none';
   reasoningTitleEl.textContent = '思考中…';
+  el.classList.add('ds-auto-top');
   const bodyRenderer = AIMarkdown.createStreamingRenderer(bodyEl);
   const reasoningRenderer = AIMarkdown.createStreamingTextRenderer(reasoningBodyEl);
   currentRenderers = [bodyRenderer, reasoningRenderer];
@@ -573,6 +580,7 @@ async function handleExplainThis(e) {
         el.querySelector('.ds-actions').style.display = 'flex';
         el.querySelector('.ds-model-tag').textContent = msg.model || '';
         cleanup();
+        el.classList.remove('ds-auto-top');
       });
     } else if (msg.type === 'error') {
       showStreamFailure(el, msg.error);
