@@ -228,12 +228,14 @@ async function performStreamRequest(port, { promptType, text, context, batchId, 
     systemPrompt = '你是一个专业的翻译引擎。只输出规定格式的译文，不要任何解释、说明。';
   }
 
+  const kind = mode ? (mode === 'B' ? 'translate' : 'explain') : (promptType === 'explain' ? 'explain' : 'translate');
   if (!model) {
-    port.postMessage({ type: 'error', error: '请先选择模型并保存设置', batchId });
+    port.postMessage({ type: 'error', error: kind === 'translate'
+      ? '请先在设置的「全文翻译」标签选择模型并保存设置'
+      : '请先在设置的「解释」标签选择模型并保存设置', batchId });
     port.disconnect();
     return;
   }
-  const kind = mode ? (mode === 'B' ? 'translate' : 'explain') : (promptType === 'explain' ? 'explain' : 'translate');
   let baseUrl;
   let connection;
   try {
